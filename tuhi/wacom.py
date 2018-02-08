@@ -97,46 +97,31 @@ class WacomCorruptDataException(WacomException):
 
 class WacomProtocol(GObject.Object):
     '''
-    Internal class to handle the communication with the Wacom device.
+    Class used to register a device. This class is only useful for
+    the very first register commands and attempts to detect the type of
+    device based on the responses.
 
-    This is the top-level class and should represent the latest device's
-    communication patterns. Any device-specific quirks are handled in the
-    subclasses of this device, reverse-ordered by date. Right now, this
-    means WacomProtocol represents the IntuosPro, subclassing that is the
-    Slate which itself is subclassed by the Spark.
-
-    :param device: the BlueZDevice object that is this wacom device
-    :param uuid: the UUID {to be} assigned to the device
+    Once register_device has finished, self.protocol is set to the correct
+    protocol. This may later be used for init_protocol() to instantiate the
+    right class.
     '''
     protocol = Protocol.UNKNOWN
 
     __gsignals__ = {
-        'drawing':
-            (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
         'button-press-required':
             (GObject.SignalFlags.RUN_FIRST, None, ()),
-        # battery level in %, boolean for is-charging
-        "battery-status":
-            (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_INT, GObject.TYPE_BOOLEAN)),
     }
 
     def __init__(self, device, uuid):
         GObject.Object.__init__(self)
         self.device = device
         self.nordic_answer = None
-        self.pen_data_buffer = []
         self.name = device.name
         self._uuid = uuid
         self.fw_logger = logging.getLogger('tuhi.fw')
-
-        device.connect_gatt_value(WACOM_CHRC_LIVE_PEN_DATA_UUID,
-                                  self._on_pen_data_changed)
-        device.connect_gatt_value(WACOM_OFFLINE_CHRC_PEN_DATA_UUID,
-                                  self._on_pen_data_received)
         device.connect_gatt_value(NORDIC_UART_CHRC_RX_UUID,
                                   self._on_nordic_data_received)
-        device.connect_gatt_value(MYSTERIOUS_NOTIFICATION_CHRC_UUID,
-                                  self._on_mysterious_data_received)
+        # FIXME: we should be able to disconnect from this
 
     @classmethod
     def init_protocol(cls, protocol, device, uuid):
@@ -148,53 +133,13 @@ class WacomProtocol(GObject.Object):
             wacom_protocol = WacomProtocolSpark(device, uuid)
         elif protocol == Protocol.SLATE:
             wacom_protocol = WacomProtocolSlate(device, uuid)
+        elif protocol == Protocol.INTUOS_PRO:
+            wacom_protocol = WacomProtocolIntuosPro(device, uuid)
         else:
-            # FIXME: change to an assert once intuos-pro is implemented, we
-            # never get here
             logger.error(f'Protocol "{protocol}" not implemented')
             raise WacomCorruptDataException(f'Protocol "{protocol}" not implemented')
 
         return wacom_protocol
-
-    @classmethod
-    def is_spark(cls, device):
-        return MYSTERIOUS_NOTIFICATION_CHRC_UUID not in device.characteristics
-
-    def _on_mysterious_data_received(self, name, value):
-        self.fw_logger.debug(f'mysterious: {binascii.hexlify(bytes(value))}')
-
-    def _on_pen_data_changed(self, name, value):
-        logger.debug(binascii.hexlify(bytes(value)))
-
-        if value[0] == 0x10:
-            pressure = int.from_bytes(value[2:4], byteorder='little')
-            buttons = int(value[10])
-            logger.info(f'New Pen Data: pressure: {pressure}, button: {buttons}')
-        elif value[0] == 0xa2:
-            # entering proximity event
-            length = value[1]
-            pen_id = binascii.hexlify(bytes(value[2:]))
-            logger.info(f'Pen {pen_id} entered proximity')
-        elif value[0] == 0xa1:
-            # data event
-            length = value[1]
-            if length % 6 != 0:
-                logger.error(f'wrong data: {binascii.hexlify(bytes(value))}')
-                return
-            data = value[2:]
-            while data:
-                if bytes(data) == b'\xff\xff\xff\xff\xff\xff':
-                    logger.info(f'Pen left proximity')
-                else:
-                    x = int.from_bytes(data[0:2], byteorder='little')
-                    y = int.from_bytes(data[2:4], byteorder='little')
-                    pressure = int.from_bytes(data[4:6], byteorder='little')
-                    self.logger.info(f'New Pen Data: ({x},{y}), pressure: {pressure}')
-                data = data[6:]
-
-    def _on_pen_data_received(self, name, data):
-        self.fw_logger.debug(f'RX Pen    <-- {list2hex(data)}')
-        self.pen_data_buffer.extend(data)
 
     def _on_nordic_data_received(self, name, value):
         self.fw_logger.debug(f'RX Nordic <-- {list2hex(value)}')
@@ -277,22 +222,119 @@ class WacomProtocol(GObject.Object):
         self.send_nordic_command(command=0xe7,
                                  arguments=args)
 
+    def register_device(self):
+        self.register_connection()
+        logger.info('Press the button now to confirm')
+        self.emit('button-press-required')
+        data = self.wait_nordic_data([0xe4, 0x53], 10)
+
+        # FIXME: pretty sure that won't work with the spark
+
+        if data.opcode == 0xe4:
+            self.protocol = Protocol.SLATE
+        elif data.opcode == 0x53:
+            self.protocol = Protocol.INTUOS_PRO
+        else:
+            self.protocol = Protocol.SPARK
+
+
+class WacomProtocolIntuosPro(WacomProtocol):
+    '''
+    Internal class to handle the communication with the latest-model Wacom
+    device.
+
+    This is the top-level class and should represent the latest device's
+    communication patterns. Any device-specific quirks are handled in the
+    subclasses of this device, reverse-ordered by date. Right now, this
+    means WacomProtocol represents the IntuosPro, subclassing that is the
+    Slate which itself is subclassed by the Spark.
+
+    :param device: the BlueZDevice object that is this wacom device
+    :param uuid: the UUID {to be} assigned to the device
+    '''
+    width = 21600  # FIXME
+    height = 14800
+    protocol = Protocol.INTUOS_PRO
+
+    __gsignals__ = {
+        'drawing':
+            (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_PYOBJECT,)),
+        # battery level in %, boolean for is-charging
+        "battery-status":
+            (GObject.SignalFlags.RUN_FIRST, None, (GObject.TYPE_INT, GObject.TYPE_BOOLEAN)),
+    }
+
+    def __init__(self, device, uuid):
+        super().__init__(device, uuid)
+        self.pen_data_buffer = []
+
+        device.connect_gatt_value(WACOM_CHRC_LIVE_PEN_DATA_UUID,
+                                  self._on_pen_data_changed)
+        device.connect_gatt_value(WACOM_OFFLINE_CHRC_PEN_DATA_UUID,
+                                  self._on_pen_data_received)
+        device.connect_gatt_value(MYSTERIOUS_NOTIFICATION_CHRC_UUID,
+                                  self._on_mysterious_data_received)
+
+    @classmethod
+    def is_spark(cls, device):
+        return MYSTERIOUS_NOTIFICATION_CHRC_UUID not in device.characteristics
+
+    def _on_mysterious_data_received(self, name, value):
+        self.fw_logger.debug(f'mysterious: {binascii.hexlify(bytes(value))}')
+
+    def _on_pen_data_changed(self, name, value):
+        logger.debug(binascii.hexlify(bytes(value)))
+
+        if value[0] == 0x10:
+            pressure = int.from_bytes(value[2:4], byteorder='little')
+            buttons = int(value[10])
+            logger.info(f'New Pen Data: pressure: {pressure}, button: {buttons}')
+        elif value[0] == 0xa2:
+            # entering proximity event
+            length = value[1]
+            pen_id = binascii.hexlify(bytes(value[2:]))
+            logger.info(f'Pen {pen_id} entered proximity')
+        elif value[0] == 0xa1:
+            # data event
+            length = value[1]
+            if length % 6 != 0:
+                logger.error(f'wrong data: {binascii.hexlify(bytes(value))}')
+                return
+            data = value[2:]
+            while data:
+                if bytes(data) == b'\xff\xff\xff\xff\xff\xff':
+                    logger.info(f'Pen left proximity')
+                else:
+                    x = int.from_bytes(data[0:2], byteorder='little')
+                    y = int.from_bytes(data[2:4], byteorder='little')
+                    pressure = int.from_bytes(data[4:6], byteorder='little')
+                    self.logger.info(f'New Pen Data: ({x},{y}), pressure: {pressure}')
+                data = data[6:]
+
+    def _on_pen_data_received(self, name, data):
+        self.fw_logger.debug(f'RX Pen    <-- {list2hex(data)}')
+        self.pen_data_buffer.extend(data)
+
     def e3_command(self):
         self.send_nordic_command_sync(command=0xe3,
                                       expected_opcode=0xb3)
 
     def set_time(self):
-        # Device time is UTC
-        current_time = time.strftime('%y%m%d%H%M%S', time.gmtime())
-        args = [int(i) for i in binascii.unhexlify(current_time)]
+        # Device time is seconds since epoch
+        t = int(time.time())
+        args = list(t.to_bytes(length=4, byteorder='little')) + [0x00, 0x00]
         self.send_nordic_command_sync(command=0xb6,
                                       expected_opcode=0xb3,
                                       arguments=args)
 
     def read_time(self):
-        data = self.send_nordic_command_sync(command=0xb6,
+        data = self.send_nordic_command_sync(command=0xd6,
                                              expected_opcode=0xbd)
-        logger.debug(f'b6 returned {data}')
+
+        # Last two bytes are unknown
+        seconds = int.from_bytes(data[0:4], byteorder='little')
+        ts = time.strftime('%y-%m-%d %H:%M:%S', time.localtime(seconds))
+        logger.debug(f'b6 returned epoch: {seconds} ({ts})')
         # FIXME: check if data matches self.current_time
 
     def get_battery_info(self):
@@ -304,11 +346,11 @@ class WacomProtocol(GObject.Object):
         data = self.send_nordic_command_sync(command=0xb7,
                                              expected_opcode=0xb8,
                                              arguments=(arg,))
-        fw = ''.join([hex(d)[2:] for d in data[1:]])
-        return fw.upper()
+        fw = ''.join([chr(d) for d in data[1:]])
+        return fw
 
     def get_name(self):
-        data = self.send_nordic_command_sync(command=0xbb,
+        data = self.send_nordic_command_sync(command=0xdb,
                                              expected_opcode=0xbc)
         return bytes(data)
 
@@ -535,11 +577,7 @@ class WacomProtocol(GObject.Object):
         except WacomEEAGAINException:
             logger.warning('no data, please make sure the LED is blue and the button is pressed to switch it back to green')
 
-    def register_device(self):
-        self.register_connection()
-        logger.info('Press the button now to confirm')
-        self.emit('button-press-required')
-        self.wait_nordic_data(0xe4, 10)
+    def register_device_finish(self):
         self.set_time()
         self.read_time()
         self.ec_command()
@@ -564,6 +602,31 @@ class WacomProtocolSlate(WacomProtocol):
     width = 21600
     height = 14800
     protocol = Protocol.SLATE
+
+    def set_time(self):
+        # Device time is UTC
+        current_time = time.strftime('%y%m%d%H%M%S', time.gmtime())
+        args = [int(i) for i in binascii.unhexlify(current_time)]
+        self.send_nordic_command_sync(command=0xb6,
+                                      expected_opcode=0xb3,
+                                      arguments=args)
+
+    def read_time(self):
+        data = self.send_nordic_command_sync(command=0xb6,
+                                             expected_opcode=0xbd)
+        logger.debug(f'b6 returned {data}')
+
+    def get_firmware_version(self, arg):
+        data = self.send_nordic_command_sync(command=0xb7,
+                                             expected_opcode=0xb8,
+                                             arguments=(arg,))
+        fw = ''.join([hex(d)[2:] for d in data[1:]])
+        return fw.upper()
+
+    def get_name(self):
+        data = self.send_nordic_command_sync(command=0xbb,
+                                             expected_opcode=0xbc)
+        return bytes(data)
 
 
 class WacomProtocolSpark(WacomProtocolSlate):
@@ -634,7 +697,8 @@ class WacomProtocolSpark(WacomProtocolSlate):
         except WacomEEAGAINException:
             logger.warning('no data, please make sure the LED is blue and the button is pressed to switch it back to green')
 
-    def register_device(self):
+    def register_device_finish(self):
+        # FIXME:
         try:
             self.check_connection()
         except WacomWrongModeException:
@@ -698,11 +762,10 @@ class WacomDevice(GObject.Object):
             self._uuid = self._config['uuid']
             self._init_protocol()
 
-    def _init_protocol(self):
+    def _init_protocol(self, protocol=Protocol.UNKNOWN):
         '''Initialize the protocol for a known device, i.e. one that already
         has a config file'''
-        protocol = Protocol.UNKNOWN
-        if self._config is not None:
+        if self._config is not None and protocol == Protocol.UNKNOWN:
             try:
                 protocol = next(p for p in Protocol if p.value == self._config['Protocol'])
                 if protocol == Protocol.UNKNOWN:
@@ -744,8 +807,16 @@ class WacomDevice(GObject.Object):
     def register_device(self):
         self._uuid = uuid.uuid4().hex[:12]
         logger.debug(f'{self._device.address}: registering device, assigned {self.uuid}')
-        self._init_protocol()
-        self._wacom_protocol.register_device()
+
+        wp = WacomProtocol(self._device, self._uuid)
+        s = wp.connect('button-press-required', self._on_button_press_required)
+        wp.register_device()
+        wp.disconnect(s)
+        protocol = wp.protocol
+        del wp
+
+        self._init_protocol(protocol)
+        self._wacom_protocol.register_device_finish()
         logger.info('registration completed')
         self.notify('uuid')
 
