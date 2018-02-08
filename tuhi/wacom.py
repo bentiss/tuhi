@@ -144,14 +144,6 @@ class WacomProtocol(GObject.Object):
         Returns the right protocol instance for the given desired protocol,
         device and uuid
         '''
-        if protocol == Protocol.UNKNOWN:
-            # we are registering a new device, or we might have an early
-            # config file from an older tuhi version
-            if WacomProtocol.is_spark(device):
-                protocol = Protocol.SPARK
-            else:
-                protocol = Protocol.SLATE
-
         if protocol == Protocol.SPARK:
             wacom_protocol = WacomProtocolSpark(device, uuid)
         elif protocol == Protocol.SLATE:
@@ -707,13 +699,20 @@ class WacomDevice(GObject.Object):
             self._init_protocol()
 
     def _init_protocol(self):
+        '''Initialize the protocol for a known device, i.e. one that already
+        has a config file'''
         protocol = Protocol.UNKNOWN
         if self._config is not None:
             try:
                 protocol = next(p for p in Protocol if p.value == self._config['Protocol'])
+                if protocol == Protocol.UNKNOWN:
+                    raise StopIteration
             except StopIteration:
-                logger.error(f'Unknown protocol in configuration: {self._config["Protocol"]}')
-                raise WacomCorruptDataException(f'Unknown Protocol {self._config["Protocol"]}')
+                logger.error(f'Invalid protocol in configuration: {self._config["Protocol"]}')
+                raise WacomCorruptDataException(f'Invalid Protocol {self._config["Protocol"]}')
+
+        if protocol == Protocol.UNKNOWN:
+            raise WacomCorruptDataException(f'Missing Protocol entry from config file. Please re-register device')
 
         self._wacom_protocol = WacomProtocol.init_protocol(protocol, self._device, self._uuid)
 
