@@ -99,6 +99,11 @@ class WacomProtocol(GObject.Object):
     '''
     Internal class to handle the communication with the Wacom device.
 
+    This is the top-level class and should represent the latest device's
+    communication patterns. Any device-specific quirks are handled in the
+    subclasses of this device, reverse-ordered by date. Right now, this
+    means WacomProtocol represents the IntuosPro, subclassing that is the
+    Slate which itself is subclassed by the Spark.
 
     :param device: the BlueZDevice object that is this wacom device
     :param uuid: the UUID {to be} assigned to the device
@@ -569,7 +574,7 @@ class WacomProtocolSlate(WacomProtocol):
     protocol = Protocol.SLATE
 
 
-class WacomProtocolSpark(WacomProtocol):
+class WacomProtocolSpark(WacomProtocolSlate):
     '''
     Subclass to handle the communication oddities with the Wacom Spark-like
     devices.
