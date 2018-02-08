@@ -134,6 +134,32 @@ class WacomProtocol(GObject.Object):
                                   self._on_mysterious_data_received)
 
     @classmethod
+    def init_protocol(cls, protocol, device, uuid):
+        '''
+        Returns the right protocol instance for the given desired protocol,
+        device and uuid
+        '''
+        if protocol == Protocol.UNKNOWN:
+            # we are registering a new device, or we might have an early
+            # config file from an older tuhi version
+            if WacomProtocol.is_spark(device):
+                protocol = Protocol.SPARK
+            else:
+                protocol = Protocol.SLATE
+
+        if protocol == Protocol.SPARK:
+            wacom_protocol = WacomProtocolSpark(device, uuid)
+        elif protocol == Protocol.SLATE:
+            wacom_protocol = WacomProtocolSlate(device, uuid)
+        else:
+            # FIXME: change to an assert once intuos-pro is implemented, we
+            # never get here
+            logger.error(f'Protocol "{protocol}" not implemented')
+            raise WacomCorruptDataException(f'Protocol "{protocol}" not implemented')
+
+        return wacom_protocol
+
+    @classmethod
     def is_spark(cls, device):
         return MYSTERIOUS_NOTIFICATION_CHRC_UUID not in device.characteristics
 
@@ -684,23 +710,7 @@ class WacomDevice(GObject.Object):
                 logger.error(f'Unknown protocol in configuration: {self._config["Protocol"]}')
                 raise WacomCorruptDataException(f'Unknown Protocol {self._config["Protocol"]}')
 
-        if protocol == Protocol.UNKNOWN:
-            # we are registering a new device, or we might have an early
-            # config file from an older tuhi version
-            if WacomProtocol.is_spark(self._device):
-                protocol = Protocol.SPARK
-            else:
-                protocol = Protocol.SLATE
-
-        if protocol == Protocol.SPARK:
-            self._wacom_protocol = WacomProtocolSpark(self._device, self._uuid)
-        elif protocol == Protocol.SLATE:
-            self._wacom_protocol = WacomProtocolSlate(self._device, self._uuid)
-        else:
-            # FIXME: change to an assert once intuos-pro is implemented, we
-            # never get here
-            logger.error(f'Unknown Protocol {protocol}')
-            raise WacomCorruptDataException(f'Protocol "{protocol}" not implemented')
+        self._wacom_protocol = WacomProtocol.init_protocol(protocol, self._device, self._uuid)
 
         logger.debug(f'{self._device.name} is using {type(self._wacom_protocol)}')
 
