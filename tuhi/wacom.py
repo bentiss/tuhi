@@ -25,7 +25,6 @@ from .drawing import Drawing
 
 logger = logging.getLogger('tuhi.wacom')
 
-WACOM_COMPANY_ID = 0x4755
 NORDIC_UART_SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'
 NORDIC_UART_CHRC_TX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'
 NORDIC_UART_CHRC_RX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'
@@ -679,6 +678,49 @@ class WacomProtocolSlate(WacomProtocolSpark):
         if crc != binascii.crc32(bytes(pen_data)):
             raise WacomCorruptDataException("CRCs don't match")
         return pen_data
+
+
+class WacomProtocolIntuosPro(WacomProtocolSlate):
+    '''
+    Subclass to handle the communication oddities with the Wacom Inutos Pro-like
+    devices.
+
+    :param device: the BlueZDevice object that is this wacom device
+    :param uuid: the UUID {to be} assigned to the device
+    '''
+    width = 21600 # FIXME
+    height = 14800
+    protocol = Protocol.INTUOS_PRO
+
+    def set_time(self):
+        # Device time is seconds since epoch
+        t = int(time.time())
+        args = list(t.to_bytes(length=4, byteorder='little')) + [0x00, 0x00]
+        self.send_nordic_command_sync(command=0xb6,
+                                      expected_opcode=0xb3,
+                                      arguments=args)
+
+    def read_time(self):
+        data = self.send_nordic_command_sync(command=0xd6,
+                                             expected_opcode=0xbd)
+
+        # Last two bytes are unknown
+        seconds = int.from_bytes(data[0:4], byteorder='little')
+        ts = time.strftime('%y-%m-%d %H:%M:%S', time.localtime(seconds))
+        logger.debug(f'b6 returned epoch: {seconds} ({ts})')
+        # FIXME: check if data matches self.current_time
+
+    def get_firmware_version(self, arg):
+        data = self.send_nordic_command_sync(command=0xb7,
+                                             expected_opcode=0xb8,
+                                             arguments=(arg,))
+        fw = bytes(data[1:])
+        return fw
+
+    def get_name(self):
+        data = self.send_nordic_command_sync(command=0xdb,
+                                             expected_opcode=0xbc)
+        return bytes(data)
 
 
 class WacomDevice(GObject.Object):
