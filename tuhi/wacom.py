@@ -597,6 +597,14 @@ class WacomProtocolBase(WacomProtocolLowLevelComm):
                                              expected_opcode=0xb3)
         return bytes(data)
 
+    def set_random_name(self):
+        adjectives = 'attractive bald beautiful chubby clean dazzling drab elegant fancy fit flabby glamorous gorgeous handsome long magnificent muscular plain plump quaint scruffy shapely short skinny stocky ugly unkempt unsightly'.split()
+        nouns = 'alligator crocodile alpaca ant antelope ape armadillo donkey baboon badger bat bear beaver bee beetle buffalo butterfly camel carabao caribou cat cattle cheetah chimpanzee chinchilla cicada clam cockroach cod coyote crab cricket crow deer dinosaur dog dolphin duck eel elephant elk ferret fish fly fox frog gerbil giraffe gnat gnu goat goldfish gorilla grasshopper guinea pig hamster hare hedgehog herring hippopotamus hornet horse hound hyena impala insect jackal jellyfish kangaroo koala leopard lion lizard llama locust louse mallard mammoth manatee marten mink minnow mole monkey moose mosquito mouse mule muskrat otter ox oyster panda pig platypus porcupine prairie dog pug rabbit raccoon reindeer rhinoceros salmon sardine scorpion seal, sea lion serval shark sheep skunk snail snake spider squirrel swan termite tiger trout turtle walrus wasp weasel whale wolf wombat woodchuck worm yak yellowjacket zebra'.split()
+
+        import random
+
+        self.set_name(f'{random.choice(adjectives)} {random.choice(nouns)}')
+
     def register_device_finish(self):
         self.send_nordic_command_sync(command=0xe5,
                                       arguments=None,
@@ -680,6 +688,11 @@ class WacomProtocolSlate(WacomProtocolSpark):
         try:
             self.check_connection()
             self.set_time()
+            name = self.get_name()
+            logger.info(f'device name was {name}')
+            self.set_random_name()
+            name = self.get_name()
+            logger.info(f'device name is now {name}')
             battery, charging = self.get_battery_info()
             if charging:
                 logger.debug(f'device is plugged in and charged at {battery}%')
