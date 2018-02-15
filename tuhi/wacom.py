@@ -326,6 +326,7 @@ class WacomProtocolBase(WacomProtocolLowLevelComm):
         self._timestamp = 0
         self.pen_data_buffer = []
         self._uhid_device = None
+        self._last_pen_data = time.time() - 5  # initialize this in the past
 
         device.connect_gatt_value(WACOM_CHRC_LIVE_PEN_DATA_UUID,
                                   self._on_pen_data_changed)
@@ -375,6 +376,7 @@ class WacomProtocolBase(WacomProtocolLowLevelComm):
     def _on_pen_data_received(self, name, data):
         self.fw_logger.debug(f'RX Pen    <-- {list2hex(data)}')
         self.pen_data_buffer.extend(data)
+        self._last_pen_data = time.time()
 
     def check_connection(self):
         args = [int(i) for i in binascii.unhexlify(self._uuid)]
@@ -507,8 +509,22 @@ class WacomProtocolBase(WacomProtocolLowLevelComm):
         if data[0] != 0xbe:
             raise WacomException(f'unexpected answer: {data[0]:02x}')
 
+    def wait_nordic_unless_pen_data(self, opcode, timeout=None):
+        data = None
+        while data is None:
+            try:
+                data = self.wait_nordic_data(opcode, timeout)
+            except WacomTimeoutException:
+                # timeout is a time in seconds here
+                if time.time() - self._last_pen_data < timeout:
+                    # we timed out, but we are still fetching offline pen data
+                    continue
+                raise
+
+        return data
+
     def wait_for_end_read(self):
-        data = self.wait_nordic_data(0xc8, 5)
+        data = self.wait_nordic_unless_pen_data(0xc8, 5)
         if data[0] != 0xed:
             raise WacomException(f'unexpected answer: {data[0]:02x}')
         data = self.wait_nordic_data(0xc9, 5)
@@ -815,7 +831,7 @@ class WacomProtocolSlate(WacomProtocolSpark):
             logger.warning('no data, please make sure the LED is blue and the button is pressed to switch it back to green')
 
     def wait_for_end_read(self):
-        data = self.wait_nordic_data(0xc8, 5)
+        data = self.wait_nordic_unless_pen_data(0xc8, 5)
         if data[0] != 0xed:
             raise WacomException(f'unexpected answer: {data[0]:02x}')
         crc = data[1:]
